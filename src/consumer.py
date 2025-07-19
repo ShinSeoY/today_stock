@@ -8,6 +8,7 @@ import os
 from dotenv import load_dotenv
 from kafka import KafkaConsumer
 from json import loads
+import aiohttp
 
 
 load_dotenv() 
@@ -18,16 +19,34 @@ MAX_WAIT_TIME = 60  # seconds
 KAFKA_HOST = os.getenv("KAFKA_HOST")
 KAFKA_BROKERS = [KAFKA_HOST + ':9091', KAFKA_HOST + ':9092', KAFKA_HOST + ':9093']
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC")
+API_SERVER_HOST = os.getenv("API_SERVER_HOST")
 
-async def scrape_and_send_email(browser, code, email):
+async def sendMail(payload):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{API_SERVER_HOST}/api/send-email", json=payload) as resp:
+                if resp.status == 200:
+                    print(f"✅ API 전송 성공")
+                else:
+                    print(resp)
+                    raise Exception("❌ NOT 200 STATUS")
+    except Exception as e:
+        print(f"❌ API 전송 실패 : {e}")
+
+async def processMessage(browser, code, email):
     try:
         page = await browser.new_page()
         await page.goto(f"https://m.stock.naver.com/domestic/stock/{code}/total")
         content = await page.inner_text('strong[class^="GraphMain_price"]')
         await page.close()
 
-        # 이메일 전송 로직 (가정)
-        print(f"[✅ EMAIL] {email}에게 '{code}'의 가격 {content} 전송")
+        payload = {
+            "code": code,
+            "email": email,
+            "price": content
+        }
+        await sendMail(payload)
+
     except Exception as e:
         print(f"[❌ ERROR] {code} 처리 중 에러 발생: {e}")
 
@@ -40,7 +59,6 @@ def extract_raw_json(payload):
         return (code, email)
     except (json.JSONDecodeError, KeyError) as e:
         print(f"[❌ JSON ERROR] 메시지 파싱 실패: {e}")
-
 
 async def start_consumer():
     consumer = KafkaConsumer(
@@ -73,7 +91,7 @@ async def start_consumer():
                         BUFFER.clear()
                         last_flush_time = time.time()
 
-                        tasks = [scrape_and_send_email(browser, u, e) for u, e in jobs]
+                        tasks = [processMessage(browser, u, e) for u, e in jobs]
                         await asyncio.gather(*tasks)
 
                 await asyncio.sleep(1)
